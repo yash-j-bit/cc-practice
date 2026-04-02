@@ -1,0 +1,2 @@
+# cc-practice
+Claude Code
