@@ -11,7 +11,11 @@ import {
   stockIn,
   stockOut,
   getStockStatus,
+  stockTransfer,
+  addWarehouse,
 } from "../modules/stock.js";
+import { setThreshold, getAlerts } from "../modules/alerts.js";
+import { importProducts } from "../modules/importer.js";
 import {
   createOrder,
   listOrders,
@@ -190,6 +194,82 @@ stock
   });
 
 stock
+  .command("transfer")
+  .requiredOption("--sku <sku>")
+  .requiredOption("--from <from>", "source warehouse")
+  .requiredOption("--to <to>", "destination warehouse")
+  .requiredOption("--quantity <quantity>", "quantity", Number)
+  .option("--note <note>")
+  .action(async (opts) => {
+    try {
+      await ensureMigrated();
+      const r = await stockTransfer({
+        sku: opts.sku,
+        from: opts.from,
+        to: opts.to,
+        quantity: opts.quantity,
+        note: opts.note,
+      });
+      printJson(r);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+stock
+  .command("add-warehouse")
+  .requiredOption("--name <name>")
+  .option("--location <location>")
+  .action(async (opts) => {
+    try {
+      await ensureMigrated();
+      const w = await addWarehouse(opts.name, opts.location);
+      printJson(w);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+stock
+  .command("set-threshold")
+  .requiredOption("--sku <sku>")
+  .requiredOption("--min <min>", "minimum quantity", Number)
+  .option("--warehouse <warehouse>", "warehouse", DEFAULT_WAREHOUSE_NAME)
+  .action(async (opts) => {
+    try {
+      await ensureMigrated();
+      const t = await setThreshold({
+        sku: opts.sku,
+        warehouse: opts.warehouse,
+        min_quantity: opts.min,
+      });
+      printJson(t);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+stock
+  .command("alerts")
+  .action(async () => {
+    try {
+      await ensureMigrated();
+      const alerts = await getAlerts();
+      if (alerts.length === 0) {
+        console.log("(no alerts)");
+        return;
+      }
+      for (const a of alerts) {
+        console.log(
+          `${a.sku}: 現在在庫 ${a.current} / 最低在庫 ${a.minimum} - 要発注 (${a.warehouse})`,
+        );
+      }
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+stock
   .command("status")
   .option("--sku <sku>")
   .option("--warehouse <warehouse>")
@@ -280,6 +360,26 @@ order
         status: updated.status,
         updated_at: updated.updated_at,
       });
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+const importCmd = program.command("import").description("Bulk import");
+
+importCmd
+  .command("products")
+  .requiredOption("--file <path>", "path to CSV")
+  .action(async (opts) => {
+    try {
+      await ensureMigrated();
+      const result = await importProducts(opts.file);
+      console.log(
+        `Imported ${result.ok.length}/${result.total} products (${result.failed.length} failed)`,
+      );
+      for (const f of result.failed) {
+        console.log(`  row ${f.row} (${f.sku}): ${f.error}`);
+      }
     } catch (e) {
       fail(e);
     }

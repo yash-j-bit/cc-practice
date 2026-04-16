@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { getClient } from "../db/client.js";
-import { NotFoundError, ValidationError } from "../errors/index.js";
+import {
+  InsufficientStockError,
+  NotFoundError,
+  ValidationError,
+} from "../errors/index.js";
 import { logger } from "../utils/logger.js";
 
 export type OrderStatus =
@@ -40,6 +44,7 @@ const createOrderSchema = z.object({
       }),
     )
     .min(1, "at least one item is required"),
+  warehouse: z.string().min(1).optional(),
 });
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
@@ -74,6 +79,18 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
   const data = parse(createOrderSchema, input);
   const db = getClient();
 
+  let warehouseId: number | null = null;
+  if (data.warehouse) {
+    const wRes = await db.execute({
+      sql: "SELECT id FROM warehouses WHERE name = ?",
+      args: [data.warehouse],
+    });
+    if (wRes.rows.length === 0) {
+      throw new NotFoundError("warehouse", data.warehouse);
+    }
+    warehouseId = Number(wRes.rows[0].id);
+  }
+
   await db.execute("BEGIN");
   try {
     type Resolved = {
@@ -99,6 +116,19 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
       });
     }
 
+    if (warehouseId !== null) {
+      for (const r of resolved) {
+        const invRes = await db.execute({
+          sql: "SELECT quantity FROM inventory WHERE product_id = ? AND warehouse_id = ?",
+          args: [r.product_id, warehouseId],
+        });
+        const available = invRes.rows.length === 0 ? 0 : Number(invRes.rows[0].quantity);
+        if (available < r.quantity) {
+          throw new InsufficientStockError(available, r.quantity);
+        }
+      }
+    }
+
     const total = resolved.reduce(
       (sum, r) => sum + r.unit_price * r.quantity,
       0,
@@ -116,10 +146,23 @@ export async function createOrder(input: CreateOrderInput): Promise<Order> {
               VALUES (?, ?, ?, ?, ?)`,
         args: [orderId, r.product_id, r.quantity, r.unit_price, r.unit_price * r.quantity],
       });
+
+      if (warehouseId !== null) {
+        await db.execute({
+          sql: "UPDATE inventory SET quantity = quantity - ?, updated_at = datetime('now') WHERE product_id = ? AND warehouse_id = ?",
+          args: [r.quantity, r.product_id, warehouseId],
+        });
+        await db.execute({
+          sql: `INSERT INTO stock_movements
+                (product_id, warehouse_id, type, quantity, reference_type, reference_id)
+                VALUES (?, ?, 'out', ?, 'order', ?)`,
+          args: [r.product_id, warehouseId, r.quantity, orderId],
+        });
+      }
     }
 
     await db.execute("COMMIT");
-    logger.info("order created", { id: orderId, total });
+    logger.info("order created", { id: orderId, total, reserved: warehouseId !== null });
     const order = await getOrder(orderId);
     if (!order) throw new Error("order disappeared after creation");
     return order;

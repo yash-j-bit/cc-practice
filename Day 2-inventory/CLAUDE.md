@@ -38,10 +38,24 @@ CLI-based inventory management built with TypeScript + libSQL (SQLite-compatible
 - lint: `npm run lint`
 - マイグレーション: `npm run migrate`
 
-## MVP スコープ（Day 2）
-Part 1〜5 の Required:
-- 商品管理（product）: add / list / update / delete
-- 在庫管理（stock）: stockIn / stockOut / getStockStatus
-- 受注管理（order）: createOrder / listOrders / updateOrderStatus
+## 実装済みモジュール
+- **product**: `addProduct`, `listProducts`, `updateProduct`, `deleteProduct` (logical), `getProductBySku`
+- **stock**: `stockIn`, `stockOut`, `getStockStatus`, `stockTransfer`, `addWarehouse`
+- **order**: `createOrder` (optional `warehouse` for stock reservation), `listOrders`, `updateOrderStatus`, `getOrder`
+- **alerts**: `setThreshold`, `getAlerts` (current < minimum)
+- **importer**: `importProducts` (CSV bulk import, continues on row error)
 
-Part 6 以降（campaign / accounting / CLI / integration tests）は後回し。
+## DB スキーマ（src/db/schema.ts）
+products, warehouses, inventory, stock_movements, orders, order_items,
+shipments, campaigns, transactions, stock_thresholds.
+
+## CLI コマンド
+```
+inventory product add|list|update|delete
+inventory stock in|out|status|transfer|add-warehouse|set-threshold|alerts
+inventory order create|list|status
+inventory import products --file <csv>
+```
+
+## 未実装（Part 6〜9）
+campaign / accounting / shipment の CLI、integration tests、rewind 演習。

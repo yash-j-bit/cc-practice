@@ -104,6 +104,17 @@ export const SCHEMA_STATEMENTS: string[] = [
 
   `CREATE INDEX IF NOT EXISTS idx_orders_status
     ON orders (status, created_at)`,
+
+  `CREATE TABLE IF NOT EXISTS stock_thresholds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    warehouse_id INTEGER NOT NULL,
+    min_quantity INTEGER NOT NULL CHECK (min_quantity >= 0),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (product_id, warehouse_id),
+    FOREIGN KEY (product_id) REFERENCES products(id),
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+  )`,
 ];
 
 export const DEFAULT_WAREHOUSE_NAME = "Main";

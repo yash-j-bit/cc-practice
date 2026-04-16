@@ -168,6 +168,115 @@ export async function stockOut(input: StockMovementInput): Promise<InventoryRow>
   return row;
 }
 
+const transferSchema = z.object({
+  sku: z.string().min(1),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  quantity: z.number().int().positive("quantity must be > 0"),
+  note: z.string().optional(),
+});
+
+export type StockTransferInput = z.infer<typeof transferSchema>;
+
+export interface TransferResult {
+  from: { warehouse: string; quantity: number };
+  to: { warehouse: string; quantity: number };
+}
+
+export async function addWarehouse(
+  name: string,
+  location?: string,
+): Promise<{ id: number; name: string }> {
+  if (!name.trim()) {
+    throw new ValidationError("warehouse name is required");
+  }
+  const db = getClient();
+  const existing = await db.execute({
+    sql: "SELECT id FROM warehouses WHERE name = ?",
+    args: [name],
+  });
+  if (existing.rows.length > 0) {
+    return { id: Number(existing.rows[0].id), name };
+  }
+  const res = await db.execute({
+    sql: "INSERT INTO warehouses (name, location) VALUES (?, ?)",
+    args: [name, location ?? null],
+  });
+  return { id: Number(res.lastInsertRowid), name };
+}
+
+export async function stockTransfer(
+  input: StockTransferInput,
+): Promise<TransferResult> {
+  const data = parse(transferSchema, input);
+  if (data.from === data.to) {
+    throw new ValidationError("from and to must differ");
+  }
+  const db = getClient();
+  const productId = await resolveProductId(data.sku);
+  const fromId = await resolveWarehouseId(data.from);
+  const toId = await resolveWarehouseId(data.to);
+
+  await db.execute("BEGIN");
+  try {
+    const fromRow = await getInventoryRow(productId, fromId);
+    const available = fromRow?.quantity ?? 0;
+    if (available < data.quantity) {
+      throw new InsufficientStockError(available, data.quantity);
+    }
+
+    await db.execute({
+      sql: "UPDATE inventory SET quantity = quantity - ?, updated_at = datetime('now') WHERE product_id = ? AND warehouse_id = ?",
+      args: [data.quantity, productId, fromId],
+    });
+
+    const toRow = await getInventoryRow(productId, toId);
+    if (toRow) {
+      await db.execute({
+        sql: "UPDATE inventory SET quantity = quantity + ?, updated_at = datetime('now') WHERE product_id = ? AND warehouse_id = ?",
+        args: [data.quantity, productId, toId],
+      });
+    } else {
+      await db.execute({
+        sql: "INSERT INTO inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)",
+        args: [productId, toId, data.quantity],
+      });
+    }
+
+    await db.execute({
+      sql: `INSERT INTO stock_movements
+            (product_id, warehouse_id, type, quantity, reference_type, note)
+            VALUES (?, ?, 'out', ?, 'transfer', ?)`,
+      args: [productId, fromId, data.quantity, data.note ?? null],
+    });
+    await db.execute({
+      sql: `INSERT INTO stock_movements
+            (product_id, warehouse_id, type, quantity, reference_type, note)
+            VALUES (?, ?, 'in', ?, 'transfer', ?)`,
+      args: [productId, toId, data.quantity, data.note ?? null],
+    });
+
+    await db.execute("COMMIT");
+  } catch (err) {
+    await db.execute("ROLLBACK");
+    throw err;
+  }
+
+  logger.info("stock transfer", {
+    sku: data.sku,
+    from: data.from,
+    to: data.to,
+    qty: data.quantity,
+  });
+
+  const fromFinal = (await getInventoryRow(productId, fromId))?.quantity ?? 0;
+  const toFinal = (await getInventoryRow(productId, toId))?.quantity ?? 0;
+  return {
+    from: { warehouse: data.from, quantity: fromFinal },
+    to: { warehouse: data.to, quantity: toFinal },
+  };
+}
+
 export interface StockStatusOptions {
   sku?: string;
   warehouse?: string;

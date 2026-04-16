@@ -8,7 +8,13 @@ import {
   updateOrderStatus,
   getOrder,
 } from "../src/modules/order.js";
-import { NotFoundError, ValidationError } from "../src/errors/index.js";
+import { stockIn } from "../src/modules/stock.js";
+import {
+  NotFoundError,
+  ValidationError,
+  InsufficientStockError,
+} from "../src/errors/index.js";
+import { DEFAULT_WAREHOUSE_NAME } from "../src/db/schema.js";
 
 let db: Client;
 
@@ -200,6 +206,72 @@ describe("order.updateOrderStatus", () => {
     await expect(updateOrderStatus(9999, "confirmed")).rejects.toBeInstanceOf(
       NotFoundError,
     );
+  });
+});
+
+describe("order.createOrder with stock reservation", () => {
+  it("decrements inventory on success", async () => {
+    await stockIn({ sku: "A", quantity: 10, warehouse: DEFAULT_WAREHOUSE_NAME });
+    await createOrder({
+      customer_name: "X",
+      warehouse: DEFAULT_WAREHOUSE_NAME,
+      items: [{ sku: "A", quantity: 3 }],
+    });
+    const res = await db.execute(
+      "SELECT quantity FROM inventory WHERE product_id = (SELECT id FROM products WHERE sku='A')",
+    );
+    expect(res.rows[0].quantity).toBe(7);
+  });
+
+  it("throws InsufficientStockError when stock < requested", async () => {
+    await stockIn({ sku: "A", quantity: 5, warehouse: DEFAULT_WAREHOUSE_NAME });
+    await expect(
+      createOrder({
+        customer_name: "X",
+        warehouse: DEFAULT_WAREHOUSE_NAME,
+        items: [{ sku: "A", quantity: 10 }],
+      }),
+    ).rejects.toBeInstanceOf(InsufficientStockError);
+  });
+
+  it("throws InsufficientStockError when no inventory row exists", async () => {
+    await expect(
+      createOrder({
+        customer_name: "X",
+        warehouse: DEFAULT_WAREHOUSE_NAME,
+        items: [{ sku: "A", quantity: 1 }],
+      }),
+    ).rejects.toBeInstanceOf(InsufficientStockError);
+  });
+
+  it("rolls back all decrements when one item is insufficient (atomic)", async () => {
+    await stockIn({ sku: "A", quantity: 10, warehouse: DEFAULT_WAREHOUSE_NAME });
+    await stockIn({ sku: "B", quantity: 2, warehouse: DEFAULT_WAREHOUSE_NAME });
+    await expect(
+      createOrder({
+        customer_name: "X",
+        warehouse: DEFAULT_WAREHOUSE_NAME,
+        items: [
+          { sku: "A", quantity: 3 },
+          { sku: "B", quantity: 5 },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(InsufficientStockError);
+    const aRes = await db.execute(
+      "SELECT quantity FROM inventory WHERE product_id = (SELECT id FROM products WHERE sku='A')",
+    );
+    expect(aRes.rows[0].quantity).toBe(10);
+    expect(await listOrders()).toEqual([]);
+  });
+
+  it("throws NotFoundError for unknown warehouse", async () => {
+    await expect(
+      createOrder({
+        customer_name: "X",
+        warehouse: "Ghost",
+        items: [{ sku: "A", quantity: 1 }],
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 
