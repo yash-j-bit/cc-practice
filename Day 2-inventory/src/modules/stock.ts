@@ -1,0 +1,206 @@
+import { z } from "zod";
+import { getClient } from "../db/client.js";
+import {
+  InsufficientStockError,
+  NotFoundError,
+  ValidationError,
+} from "../errors/index.js";
+import { logger } from "../utils/logger.js";
+
+export interface InventoryRow {
+  product_id: number;
+  warehouse_id: number;
+  quantity: number;
+}
+
+export interface StockStatus {
+  sku: string;
+  product_name: string;
+  warehouse: string;
+  quantity: number;
+}
+
+const movementSchema = z.object({
+  sku: z.string().min(1),
+  quantity: z.number().int().positive("quantity must be > 0"),
+  warehouse: z.string().min(1),
+  note: z.string().optional(),
+  reference_type: z.string().optional(),
+  reference_id: z.number().int().optional(),
+});
+
+export type StockMovementInput = z.infer<typeof movementSchema>;
+
+function parse<T>(schema: z.ZodSchema<T>, input: unknown): T {
+  const result = schema.safeParse(input);
+  if (!result.success) {
+    throw new ValidationError(
+      result.error.issues.map((i) => i.message).join("; "),
+    );
+  }
+  return result.data;
+}
+
+async function resolveProductId(sku: string): Promise<number> {
+  const db = getClient();
+  const res = await db.execute({
+    sql: "SELECT id FROM products WHERE sku = ? AND deleted_at IS NULL",
+    args: [sku],
+  });
+  if (res.rows.length === 0) throw new NotFoundError("product", sku);
+  return Number(res.rows[0].id);
+}
+
+async function resolveWarehouseId(name: string): Promise<number> {
+  const db = getClient();
+  const res = await db.execute({
+    sql: "SELECT id FROM warehouses WHERE name = ?",
+    args: [name],
+  });
+  if (res.rows.length === 0) throw new NotFoundError("warehouse", name);
+  return Number(res.rows[0].id);
+}
+
+async function getInventoryRow(
+  productId: number,
+  warehouseId: number,
+): Promise<InventoryRow | null> {
+  const db = getClient();
+  const res = await db.execute({
+    sql: "SELECT product_id, warehouse_id, quantity FROM inventory WHERE product_id = ? AND warehouse_id = ?",
+    args: [productId, warehouseId],
+  });
+  if (res.rows.length === 0) return null;
+  const row = res.rows[0];
+  return {
+    product_id: Number(row.product_id),
+    warehouse_id: Number(row.warehouse_id),
+    quantity: Number(row.quantity),
+  };
+}
+
+export async function stockIn(input: StockMovementInput): Promise<InventoryRow> {
+  const data = parse(movementSchema, input);
+  const db = getClient();
+  const productId = await resolveProductId(data.sku);
+  const warehouseId = await resolveWarehouseId(data.warehouse);
+
+  await db.execute("BEGIN");
+  try {
+    const existing = await getInventoryRow(productId, warehouseId);
+    if (existing) {
+      await db.execute({
+        sql: "UPDATE inventory SET quantity = quantity + ?, updated_at = datetime('now') WHERE product_id = ? AND warehouse_id = ?",
+        args: [data.quantity, productId, warehouseId],
+      });
+    } else {
+      await db.execute({
+        sql: "INSERT INTO inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)",
+        args: [productId, warehouseId, data.quantity],
+      });
+    }
+    await db.execute({
+      sql: `INSERT INTO stock_movements
+            (product_id, warehouse_id, type, quantity, reference_type, reference_id, note)
+            VALUES (?, ?, 'in', ?, ?, ?, ?)`,
+      args: [
+        productId,
+        warehouseId,
+        data.quantity,
+        data.reference_type ?? null,
+        data.reference_id ?? null,
+        data.note ?? null,
+      ],
+    });
+    await db.execute("COMMIT");
+  } catch (err) {
+    await db.execute("ROLLBACK");
+    throw err;
+  }
+
+  logger.info("stock in", { sku: data.sku, quantity: data.quantity });
+  const row = await getInventoryRow(productId, warehouseId);
+  if (!row) throw new Error("inventory row missing after stockIn");
+  return row;
+}
+
+export async function stockOut(input: StockMovementInput): Promise<InventoryRow> {
+  const data = parse(movementSchema, input);
+  const db = getClient();
+  const productId = await resolveProductId(data.sku);
+  const warehouseId = await resolveWarehouseId(data.warehouse);
+
+  await db.execute("BEGIN");
+  try {
+    const existing = await getInventoryRow(productId, warehouseId);
+    const available = existing?.quantity ?? 0;
+    if (available < data.quantity) {
+      await db.execute("ROLLBACK");
+      throw new InsufficientStockError(available, data.quantity);
+    }
+    await db.execute({
+      sql: "UPDATE inventory SET quantity = quantity - ?, updated_at = datetime('now') WHERE product_id = ? AND warehouse_id = ?",
+      args: [data.quantity, productId, warehouseId],
+    });
+    await db.execute({
+      sql: `INSERT INTO stock_movements
+            (product_id, warehouse_id, type, quantity, reference_type, reference_id, note)
+            VALUES (?, ?, 'out', ?, ?, ?, ?)`,
+      args: [
+        productId,
+        warehouseId,
+        data.quantity,
+        data.reference_type ?? null,
+        data.reference_id ?? null,
+        data.note ?? null,
+      ],
+    });
+    await db.execute("COMMIT");
+  } catch (err) {
+    if (err instanceof InsufficientStockError) throw err;
+    await db.execute("ROLLBACK");
+    throw err;
+  }
+
+  logger.info("stock out", { sku: data.sku, quantity: data.quantity });
+  const row = await getInventoryRow(productId, warehouseId);
+  if (!row) throw new Error("inventory row missing after stockOut");
+  return row;
+}
+
+export interface StockStatusOptions {
+  sku?: string;
+  warehouse?: string;
+}
+
+export async function getStockStatus(
+  opts: StockStatusOptions = {},
+): Promise<StockStatus[]> {
+  const db = getClient();
+  const conditions: string[] = [];
+  const args: (string | number)[] = [];
+  if (opts.sku) {
+    conditions.push("p.sku = ?");
+    args.push(opts.sku);
+  }
+  if (opts.warehouse) {
+    conditions.push("w.name = ?");
+    args.push(opts.warehouse);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const res = await db.execute({
+    sql: `SELECT p.sku AS sku, p.name AS product_name, w.name AS warehouse, i.quantity AS quantity
+          FROM inventory i
+          JOIN products p ON p.id = i.product_id
+          JOIN warehouses w ON w.id = i.warehouse_id
+          ${where}
+          ORDER BY p.sku, w.name`,
+    args,
+  });
+  return res.rows.map((r) => ({
+    sku: String(r.sku),
+    product_name: String(r.product_name),
+    warehouse: String(r.warehouse),
+    quantity: Number(r.quantity),
+  }));
+}
