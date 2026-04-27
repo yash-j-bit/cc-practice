@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { getClient } from "../db/client.js";
+import { getClient, withTransaction } from "../db/client.js";
 import {
   InsufficientStockError,
   NotFoundError,
   ValidationError,
 } from "../errors/index.js";
 import { logger } from "../utils/logger.js";
+import { parse } from "../utils/validation.js";
 
 export interface InventoryRow {
   product_id: number;
@@ -30,16 +31,6 @@ const movementSchema = z.object({
 });
 
 export type StockMovementInput = z.infer<typeof movementSchema>;
-
-function parse<T>(schema: z.ZodSchema<T>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    throw new ValidationError(
-      result.error.issues.map((i) => i.message).join("; "),
-    );
-  }
-  return result.data;
-}
 
 async function resolveProductId(sku: string): Promise<number> {
   const db = getClient();
@@ -81,12 +72,10 @@ async function getInventoryRow(
 
 export async function stockIn(input: StockMovementInput): Promise<InventoryRow> {
   const data = parse(movementSchema, input);
-  const db = getClient();
   const productId = await resolveProductId(data.sku);
   const warehouseId = await resolveWarehouseId(data.warehouse);
 
-  await db.execute("BEGIN");
-  try {
+  await withTransaction(async (db) => {
     const existing = await getInventoryRow(productId, warehouseId);
     if (existing) {
       await db.execute({
@@ -112,11 +101,7 @@ export async function stockIn(input: StockMovementInput): Promise<InventoryRow> 
         data.note ?? null,
       ],
     });
-    await db.execute("COMMIT");
-  } catch (err) {
-    await db.execute("ROLLBACK");
-    throw err;
-  }
+  });
 
   logger.info("stock in", { sku: data.sku, quantity: data.quantity });
   const row = await getInventoryRow(productId, warehouseId);
@@ -126,16 +111,13 @@ export async function stockIn(input: StockMovementInput): Promise<InventoryRow> 
 
 export async function stockOut(input: StockMovementInput): Promise<InventoryRow> {
   const data = parse(movementSchema, input);
-  const db = getClient();
   const productId = await resolveProductId(data.sku);
   const warehouseId = await resolveWarehouseId(data.warehouse);
 
-  await db.execute("BEGIN");
-  try {
+  await withTransaction(async (db) => {
     const existing = await getInventoryRow(productId, warehouseId);
     const available = existing?.quantity ?? 0;
     if (available < data.quantity) {
-      await db.execute("ROLLBACK");
       throw new InsufficientStockError(available, data.quantity);
     }
     await db.execute({
@@ -155,12 +137,7 @@ export async function stockOut(input: StockMovementInput): Promise<InventoryRow>
         data.note ?? null,
       ],
     });
-    await db.execute("COMMIT");
-  } catch (err) {
-    if (err instanceof InsufficientStockError) throw err;
-    await db.execute("ROLLBACK");
-    throw err;
-  }
+  });
 
   logger.info("stock out", { sku: data.sku, quantity: data.quantity });
   const row = await getInventoryRow(productId, warehouseId);
@@ -212,13 +189,11 @@ export async function stockTransfer(
   if (data.from === data.to) {
     throw new ValidationError("from and to must differ");
   }
-  const db = getClient();
   const productId = await resolveProductId(data.sku);
   const fromId = await resolveWarehouseId(data.from);
   const toId = await resolveWarehouseId(data.to);
 
-  await db.execute("BEGIN");
-  try {
+  await withTransaction(async (db) => {
     const fromRow = await getInventoryRow(productId, fromId);
     const available = fromRow?.quantity ?? 0;
     if (available < data.quantity) {
@@ -255,12 +230,7 @@ export async function stockTransfer(
             VALUES (?, ?, 'in', ?, 'transfer', ?)`,
       args: [productId, toId, data.quantity, data.note ?? null],
     });
-
-    await db.execute("COMMIT");
-  } catch (err) {
-    await db.execute("ROLLBACK");
-    throw err;
-  }
+  });
 
   logger.info("stock transfer", {
     sku: data.sku,
@@ -286,7 +256,7 @@ export async function getStockStatus(
   opts: StockStatusOptions = {},
 ): Promise<StockStatus[]> {
   const db = getClient();
-  const conditions: string[] = [];
+  const conditions: string[] = ["p.deleted_at IS NULL"];
   const args: (string | number)[] = [];
   if (opts.sku) {
     conditions.push("p.sku = ?");
@@ -296,7 +266,7 @@ export async function getStockStatus(
     conditions.push("w.name = ?");
     args.push(opts.warehouse);
   }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const where = `WHERE ${conditions.join(" AND ")}`;
   const res = await db.execute({
     sql: `SELECT p.sku AS sku, p.name AS product_name, w.name AS warehouse, i.quantity AS quantity
           FROM inventory i

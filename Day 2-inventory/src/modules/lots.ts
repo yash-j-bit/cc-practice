@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { getClient } from "../db/client.js";
+import { getClient, withTransaction } from "../db/client.js";
 import {
   InsufficientStockError,
   NotFoundError,
   ValidationError,
 } from "../errors/index.js";
 import { logger } from "../utils/logger.js";
+import { parse } from "../utils/validation.js";
 
 export interface StockLot {
   id: number;
@@ -40,16 +41,6 @@ const lotInSchema = z.object({
 });
 
 export type LotInInput = z.infer<typeof lotInSchema>;
-
-function parse<T>(schema: z.ZodSchema<T>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    throw new ValidationError(
-      result.error.issues.map((i) => i.message).join("; "),
-    );
-  }
-  return result.data;
-}
 
 async function resolveProductId(sku: string): Promise<number> {
   const db = getClient();
@@ -89,14 +80,19 @@ export async function lotIn(input: LotInInput): Promise<StockLot> {
   const id = Number(res.lastInsertRowid);
   logger.info("lot received", { lot: data.lot_number, qty: data.quantity });
 
+  const row = await db.execute({
+    sql: "SELECT * FROM stock_lots WHERE id = ?",
+    args: [id],
+  });
+  const r = row.rows[0];
   return {
-    id,
-    product_id: productId,
-    warehouse_id: warehouseId,
-    lot_number: data.lot_number,
-    quantity: data.quantity,
-    expiry_date: data.expiry_date ?? null,
-    received_at: new Date().toISOString(),
+    id: Number(r.id),
+    product_id: Number(r.product_id),
+    warehouse_id: Number(r.warehouse_id),
+    lot_number: String(r.lot_number),
+    quantity: Number(r.quantity),
+    expiry_date: r.expiry_date == null ? null : String(r.expiry_date),
+    received_at: String(r.received_at),
   };
 }
 
@@ -112,10 +108,8 @@ export async function lotOutFifo(
   if (quantity <= 0) throw new ValidationError("quantity must be > 0");
   const productId = await resolveProductId(sku);
   const warehouseId = await resolveWarehouseId(warehouse);
-  const db = getClient();
 
-  await db.execute("BEGIN");
-  try {
+  return withTransaction(async (db) => {
     // Get lots ordered by received_at (FIFO)
     const lotsRes = await db.execute({
       sql: `SELECT id, lot_number, quantity FROM stock_lots
@@ -151,14 +145,9 @@ export async function lotOutFifo(
       remaining -= take;
     }
 
-    await db.execute("COMMIT");
     logger.info("lot FIFO outbound", { sku, qty: quantity, lots: consumed.length });
-
     return { consumed, total_consumed: quantity };
-  } catch (err) {
-    await db.execute("ROLLBACK");
-    throw err;
-  }
+  });
 }
 
 /**

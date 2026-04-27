@@ -1,10 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import type { Client } from "@libsql/client";
-import { getClient } from "./client.js";
+import { getClient, enableForeignKeys } from "./client.js";
 import { SCHEMA_STATEMENTS, DEFAULT_WAREHOUSE_NAME } from "./schema.js";
 
 export async function migrate(db: Client = getClient()): Promise<void> {
+  await enableForeignKeys(db);
   for (const stmt of SCHEMA_STATEMENTS) {
     await db.execute(stmt);
   }

@@ -13,7 +13,6 @@ import {
   NotFoundError,
   ValidationError,
 } from "../src/errors/index.js";
-import { DEFAULT_WAREHOUSE_NAME } from "../src/db/schema.js";
 
 let db: Client;
 
@@ -186,6 +185,5 @@ describe("stock.stockTransfer", () => {
     const status = await getStockStatus({ sku: "P1" });
     const total = status.reduce((sum, s) => sum + s.quantity, 0);
     expect(total).toBe(100);
-    void DEFAULT_WAREHOUSE_NAME;
   });
 });

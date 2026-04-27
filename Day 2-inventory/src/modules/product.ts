@@ -2,10 +2,10 @@ import { z } from "zod";
 import { getClient } from "../db/client.js";
 import {
   NotFoundError,
-  ValidationError,
   ConflictError,
 } from "../errors/index.js";
 import { logger } from "../utils/logger.js";
+import { parse } from "../utils/validation.js";
 
 export interface Product {
   id: number;
@@ -42,14 +42,6 @@ const updateSchema = z
 export type AddProductInput = z.infer<typeof addSchema>;
 export type UpdateProductInput = z.infer<typeof updateSchema>;
 
-function parse<T>(schema: z.ZodSchema<T>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    throw new ValidationError(result.error.issues.map((i) => i.message).join("; "));
-  }
-  return result.data;
-}
-
 function rowToProduct(row: Record<string, unknown>): Product {
   return {
     id: Number(row.id),
@@ -68,30 +60,29 @@ export async function addProduct(input: AddProductInput): Promise<Product> {
   const data = parse(addSchema, input);
   const db = getClient();
 
-  const existing = await db.execute({
-    sql: "SELECT id FROM products WHERE sku = ?",
-    args: [data.sku],
-  });
-  if (existing.rows.length > 0) {
-    throw new ConflictError(`Product with sku ${data.sku} already exists`);
+  try {
+    const result = await db.execute({
+      sql: `INSERT INTO products (sku, name, description, price, cost)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [
+        data.sku,
+        data.name,
+        data.description ?? null,
+        data.price,
+        data.cost ?? 0,
+      ],
+    });
+    const id = Number(result.lastInsertRowid);
+    logger.info("product added", { id, sku: data.sku });
+    const p = await getProductById(id);
+    if (!p) throw new Error("product insertion race");
+    return p;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+      throw new ConflictError(`Product with sku ${data.sku} already exists`);
+    }
+    throw err;
   }
-
-  const result = await db.execute({
-    sql: `INSERT INTO products (sku, name, description, price, cost)
-          VALUES (?, ?, ?, ?, ?)`,
-    args: [
-      data.sku,
-      data.name,
-      data.description ?? null,
-      data.price,
-      data.cost ?? 0,
-    ],
-  });
-  const id = Number(result.lastInsertRowid);
-  logger.info("product added", { id, sku: data.sku });
-  const p = await getProductById(id);
-  if (!p) throw new Error("product insertion race");
-  return p;
 }
 
 export interface ListOptions {

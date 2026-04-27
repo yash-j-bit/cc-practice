@@ -9,6 +9,10 @@ export function getClient(): Client {
   return client;
 }
 
+export async function enableForeignKeys(db: Client = getClient()): Promise<void> {
+  await db.execute("PRAGMA foreign_keys = ON");
+}
+
 export function setClient(c: Client): void {
   client = c;
 }
@@ -19,8 +23,9 @@ export function resetClient(): void {
 
 export async function withTransaction<T>(
   fn: (db: Client) => Promise<T>,
+  client?: Client,
 ): Promise<T> {
-  const db = getClient();
+  const db = client ?? getClient();
   await db.execute("BEGIN");
   try {
     const result = await fn(db);

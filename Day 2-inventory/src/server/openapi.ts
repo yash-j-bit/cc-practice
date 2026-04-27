@@ -363,6 +363,31 @@ export const openApiSpec = {
         },
       },
     },
+    "/api/import/products": {
+      post: {
+        tags: ["Import"],
+        summary: "Import products from CSV file",
+        operationId: "importProducts",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["file"],
+                properties: {
+                  file: { type: "string", description: "Filename within the uploads directory" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Import result with ok/failed counts" },
+          "400": { description: "Missing file or path traversal attempt" },
+        },
+      },
+    },
     "/api/orders/{id}/status": {
       patch: {
         tags: ["Orders"],

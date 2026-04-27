@@ -10,6 +10,6 @@ export async function createTestDb(): Promise<Client> {
 }
 
 export function closeTestDb(db: Client): void {
-  db.close();
+  void db.close();
   resetClient();
 }

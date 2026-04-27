@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { getClient } from "../db/client.js";
-import { NotFoundError, ValidationError } from "../errors/index.js";
+import { NotFoundError } from "../errors/index.js";
 import { logger } from "../utils/logger.js";
+import { parse } from "../utils/validation.js";
 
 export interface StockThreshold {
   sku: string;
@@ -24,16 +25,6 @@ const setThresholdSchema = z.object({
 });
 
 export type SetThresholdInput = z.infer<typeof setThresholdSchema>;
-
-function parse<T>(schema: z.ZodSchema<T>, input: unknown): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    throw new ValidationError(
-      result.error.issues.map((i) => i.message).join("; "),
-    );
-  }
-  return result.data;
-}
 
 async function resolveIds(
   sku: string,

@@ -76,10 +76,13 @@ CREATE INDEX IF NOT EXISTS idx_orders_status
 INSERT OR IGNORE INTO warehouses (name, location) VALUES ('Main', 'default');
 
 -- DOWN
-DROP TABLE IF EXISTS order_items;
-DROP TABLE IF EXISTS orders;
+DROP INDEX IF EXISTS idx_orders_status;
 DROP INDEX IF EXISTS idx_stock_movements_product;
 DROP INDEX IF EXISTS idx_inventory_product_warehouse;
+DROP TABLE IF EXISTS stock_thresholds;
+DROP TABLE IF EXISTS stock_lots;
+DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS stock_movements;
 DROP TABLE IF EXISTS inventory;
 DROP TABLE IF EXISTS warehouses;

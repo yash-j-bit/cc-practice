@@ -1,3 +1,4 @@
+import { resolve, normalize } from "node:path";
 import { Hono } from "hono";
 import { swaggerUI } from "@hono/swagger-ui";
 import { migrate } from "../db/migrate.js";
@@ -31,6 +32,9 @@ app.onError((err, c) => {
       : err.name === "ConflictError" ? 409
       : 500;
     return c.json({ error: err.message }, status);
+  }
+  if (err instanceof SyntaxError && err.message.includes("JSON")) {
+    return c.json({ error: "Invalid JSON in request body" }, 400);
   }
   console.error(err);
   return c.json({ error: "Internal server error" }, 500);
@@ -122,8 +126,14 @@ app.post("/api/orders", async (c) => {
   return c.json(order, 201);
 });
 
+const VALID_ORDER_STATUSES = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
+
 app.get("/api/orders", async (c) => {
-  const status = c.req.query("status") as OrderStatus | undefined;
+  const statusParam = c.req.query("status");
+  if (statusParam && !VALID_ORDER_STATUSES.includes(statusParam)) {
+    return c.json({ error: `invalid status: ${statusParam}` }, 400);
+  }
+  const status = statusParam as OrderStatus | undefined;
   const customer_name = c.req.query("customer_name");
   const orders = await listOrders({ status, customer_name });
   return c.json(orders);
@@ -137,10 +147,16 @@ app.patch("/api/orders/:id/status", async (c) => {
 });
 
 // --- Import ---
+const UPLOAD_DIR = resolve(process.cwd(), "uploads");
+
 app.post("/api/import/products", async (c) => {
   const body = await c.req.json();
   if (!body.file) return c.json({ error: "file path required" }, 400);
-  const result = await importProducts(body.file);
+  const resolved = resolve(UPLOAD_DIR, normalize(body.file));
+  if (!resolved.startsWith(UPLOAD_DIR)) {
+    return c.json({ error: "file path must be within the uploads directory" }, 400);
+  }
+  const result = await importProducts(resolved);
   return c.json(result);
 });
 
