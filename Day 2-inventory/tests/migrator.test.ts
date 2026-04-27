@@ -67,6 +67,26 @@ DROP TABLE t1;`);
     expect(res.rows[0].version).toBe(1);
     expect(res.rows[0].name).toBe("init");
   });
+
+  it("rolls back and throws when migration SQL is invalid", async () => {
+    await writeMigration("001_bad.sql", `-- UP
+CREATE TABLE ok_table (id INTEGER PRIMARY KEY);
+INVALID SQL GARBAGE HERE;
+-- DOWN
+DROP TABLE ok_table;`);
+
+    await expect(migrateUp(db, tmpDir)).rejects.toThrow();
+
+    // Table should NOT exist because the whole migration was rolled back
+    const res = await db.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='ok_table'",
+    );
+    expect(res.rows).toHaveLength(0);
+
+    // No version recorded in history
+    const hist = await db.execute("SELECT COUNT(*) AS n FROM migration_history");
+    expect(Number(hist.rows[0].n)).toBe(0);
+  });
 });
 
 describe("migrator.migrateDown", () => {
@@ -120,9 +140,30 @@ DROP TABLE roundtrip;`);
     const res = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='roundtrip'");
     expect(res.rows).toHaveLength(1);
   });
+
+  it("throws when migration has no DOWN section", async () => {
+    await writeMigration("001_nope.sql", `-- UP
+CREATE TABLE nodown (id INTEGER PRIMARY KEY);`);
+
+    await migrateUp(db, tmpDir);
+    await expect(migrateDown(db, tmpDir)).rejects.toThrow(/No DOWN section/);
+  });
 });
 
 describe("migrator.migrationStatus", () => {
+  it("returns empty applied and pending when no migration files exist", async () => {
+    const status = await migrationStatus(db, tmpDir);
+    expect(status.applied).toEqual([]);
+    expect(status.pending).toEqual([]);
+  });
+
+  it("shows all as pending when none have been applied", async () => {
+    await writeMigration("001_a.sql", "-- UP\nCREATE TABLE sp (id INTEGER PRIMARY KEY);\n-- DOWN\nDROP TABLE sp;");
+    const status = await migrationStatus(db, tmpDir);
+    expect(status.applied).toEqual([]);
+    expect(status.pending).toEqual([1]);
+  });
+
   it("shows applied and pending migrations", async () => {
     await writeMigration("001_a.sql", "-- UP\nCREATE TABLE sa (id INTEGER PRIMARY KEY);\n-- DOWN\nDROP TABLE sa;");
     await writeMigration("002_b.sql", "-- UP\nCREATE TABLE sb (id INTEGER PRIMARY KEY);\n-- DOWN\nDROP TABLE sb;");

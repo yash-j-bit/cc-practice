@@ -56,9 +56,27 @@ describe("lots.lotIn", () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it("rejects non-positive quantity", async () => {
+  it("rejects non-positive quantity (zero)", async () => {
     await expect(
       lotIn({ sku: "LOT-1", warehouse: DEFAULT_WAREHOUSE_NAME, lot_number: "X", quantity: 0 }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("rejects negative quantity", async () => {
+    await expect(
+      lotIn({ sku: "LOT-1", warehouse: DEFAULT_WAREHOUSE_NAME, lot_number: "X", quantity: -5 }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("rejects unknown warehouse", async () => {
+    await expect(
+      lotIn({ sku: "LOT-1", warehouse: "Ghost", lot_number: "X", quantity: 1 }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("rejects empty lot_number", async () => {
+    await expect(
+      lotIn({ sku: "LOT-1", warehouse: DEFAULT_WAREHOUSE_NAME, lot_number: "", quantity: 1 }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 });
@@ -126,10 +144,28 @@ describe("lots.lotOutFifo", () => {
     expect(total).toBe(100); // unchanged
   });
 
-  it("rejects non-positive quantity", async () => {
+  it("rejects zero quantity", async () => {
     await expect(
       lotOutFifo("LOT-1", DEFAULT_WAREHOUSE_NAME, 0),
     ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("rejects negative quantity", async () => {
+    await expect(
+      lotOutFifo("LOT-1", DEFAULT_WAREHOUSE_NAME, -1),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("throws NotFoundError for unknown product", async () => {
+    await expect(
+      lotOutFifo("NOPE", DEFAULT_WAREHOUSE_NAME, 1),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("throws NotFoundError for unknown warehouse", async () => {
+    await expect(
+      lotOutFifo("LOT-1", "Ghost", 1),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 
@@ -147,6 +183,23 @@ describe("lots.getLots", () => {
     expect(lots).toHaveLength(2);
     expect(lots[0].lot_number).toBe("FIRST");
     expect(lots[1].lot_number).toBe("SECOND");
+  });
+
+  it("returns empty when no lots exist", async () => {
+    const lots = await getLots("LOT-1", DEFAULT_WAREHOUSE_NAME);
+    expect(lots).toHaveLength(0);
+  });
+
+  it("throws NotFoundError for unknown product", async () => {
+    await expect(
+      getLots("NOPE", DEFAULT_WAREHOUSE_NAME),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("throws NotFoundError for unknown warehouse", async () => {
+    await expect(
+      getLots("LOT-1", "Ghost"),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("excludes fully consumed lots (quantity = 0)", async () => {
@@ -188,6 +241,40 @@ describe("lots.getExpiryAlerts", () => {
       lot_number: "NO-EXPIRY",
       quantity: 10,
     });
+    const alerts = await getExpiryAlerts(30);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not return already-expired lots", async () => {
+    await lotIn({
+      sku: "LOT-1",
+      warehouse: DEFAULT_WAREHOUSE_NAME,
+      lot_number: "EXPIRED",
+      quantity: 10,
+      expiry_date: "2020-01-01",
+    });
+    const alerts = await getExpiryAlerts(30);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not return fully consumed lots even if expiring", async () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split("T")[0];
+
+    await lotIn({
+      sku: "LOT-1",
+      warehouse: DEFAULT_WAREHOUSE_NAME,
+      lot_number: "CONSUMED-SOON",
+      quantity: 5,
+      expiry_date: tomorrowStr,
+    });
+    await lotOutFifo("LOT-1", DEFAULT_WAREHOUSE_NAME, 5);
+    const alerts = await getExpiryAlerts(30);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("returns empty when no lots exist at all", async () => {
     const alerts = await getExpiryAlerts(30);
     expect(alerts).toHaveLength(0);
   });

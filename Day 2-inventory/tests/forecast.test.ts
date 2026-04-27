@@ -5,6 +5,7 @@ import { addProduct } from "../src/modules/product.js";
 import { stockIn, stockOut } from "../src/modules/stock.js";
 import { DEFAULT_WAREHOUSE_NAME } from "../src/db/schema.js";
 import {
+  getShipmentHistory,
   movingAverage,
   stdDeviation,
   safetyStock,
@@ -13,6 +14,7 @@ import {
   forecastToCsv,
   forecastToMermaid,
 } from "../src/modules/forecast.js";
+import { NotFoundError } from "../src/errors/index.js";
 
 let db: Client;
 
@@ -24,6 +26,40 @@ beforeEach(async () => {
 
 afterEach(() => {
   closeTestDb(db);
+});
+
+describe("forecast.getShipmentHistory", () => {
+  it("returns empty array when no outbound movements exist", async () => {
+    const history = await getShipmentHistory("FC-1", DEFAULT_WAREHOUSE_NAME, 30);
+    expect(history).toEqual([]);
+  });
+
+  it("returns daily aggregated outbound quantities", async () => {
+    await stockOut({ sku: "FC-1", quantity: 10, warehouse: DEFAULT_WAREHOUSE_NAME });
+    await stockOut({ sku: "FC-1", quantity: 5, warehouse: DEFAULT_WAREHOUSE_NAME });
+    const history = await getShipmentHistory("FC-1", DEFAULT_WAREHOUSE_NAME, 30);
+    expect(history).toHaveLength(1); // same day
+    expect(history[0].quantity).toBe(15); // aggregated
+    expect(history[0].date).toBeDefined();
+  });
+
+  it("throws NotFoundError for unknown product", async () => {
+    await expect(
+      getShipmentHistory("NOPE", DEFAULT_WAREHOUSE_NAME, 30),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("throws NotFoundError for unknown warehouse", async () => {
+    await expect(
+      getShipmentHistory("FC-1", "Ghost", 30),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("does not include inbound movements", async () => {
+    // FC-1 already has 1000 from stockIn in beforeEach — that should NOT appear
+    const history = await getShipmentHistory("FC-1", DEFAULT_WAREHOUSE_NAME, 30);
+    expect(history).toEqual([]);
+  });
 });
 
 describe("forecast: pure functions", () => {
