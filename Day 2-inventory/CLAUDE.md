@@ -21,6 +21,13 @@ CLI-based inventory management built with TypeScript + libSQL (SQLite-compatible
 - CLI 出力時は必ずユーザーフレンドリーなメッセージに変換する
 - 本プロジェクトは標準の `throw` + `try/catch` パターン。`neverthrow` は使わない。
 
+### 命名規則
+- ファイル名: `camelCase.ts`（例: `stockMovement.ts`）
+- 関数名: `camelCase`（例: `addProduct`, `getStockStatus`）
+- 型/インターフェース: `PascalCase`（例: `Product`, `StockAlert`）
+- DB カラム: `snake_case`（例: `product_id`, `created_at`）
+- 定数: `UPPER_SNAKE_CASE`（例: `DEFAULT_WAREHOUSE_NAME`）
+
 ### テスト
 - 各モジュールに対応するテストファイルを `tests/` に作成
 - テスト用 DB は `:memory:` を使用（`beforeEach` で新規初期化）

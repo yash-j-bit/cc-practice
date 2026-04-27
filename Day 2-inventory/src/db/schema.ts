@@ -115,6 +115,21 @@ export const SCHEMA_STATEMENTS: string[] = [
     FOREIGN KEY (product_id) REFERENCES products(id),
     FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
   )`,
+
+  `CREATE TABLE IF NOT EXISTS stock_lots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL,
+    warehouse_id INTEGER NOT NULL,
+    lot_number TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    expiry_date TEXT,
+    received_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (product_id) REFERENCES products(id),
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_stock_lots_fifo
+    ON stock_lots (product_id, warehouse_id, received_at)`,
 ];
 
 export const DEFAULT_WAREHOUSE_NAME = "Main";
