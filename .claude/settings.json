@@ -29,6 +29,16 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/auto-format.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(jq -r '.tool_input.file_path // empty'); if [[ \"$FILE\" == *.test.ts || \"$FILE\" == *.test.tsx ]]; then cd \"$CLAUDE_PROJECT_DIR/Day 3-inventory-ui/inventory-ui\" && npx vitest run --reporter=dot 2>&1 | tail -5; fi",
+            "async": true
+          }
+        ]
       }
     ]
   }

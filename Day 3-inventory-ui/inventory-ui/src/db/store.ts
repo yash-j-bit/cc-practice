@@ -21,7 +21,6 @@ export interface Store {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __INVENTORY_STORE__: Store | undefined;
 }
 
